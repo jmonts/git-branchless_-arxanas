@@ -26,27 +26,25 @@ use crate::{File, Section, SectionChangedLine};
 type Backend = CrosstermBackend<io::Stdout>;
 type CrosstermTerminal = Terminal<Backend>;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct FileKey {
     file_idx: usize,
 }
 
-#[allow(dead_code)] // TODO: remove
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct SectionKey {
     file_idx: usize,
     section_idx: usize,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct LineKey {
     file_idx: usize,
     section_idx: usize,
     line_idx: usize,
 }
 
-#[allow(dead_code)] // TODO: remove
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SelectionKey {
     None,
     File(FileKey),
@@ -302,6 +300,24 @@ impl<'a> Recorder<'a> {
                 }
 
                 Event::Key(KeyEvent {
+                    code: KeyCode::Up,
+                    modifiers: KeyModifiers::NONE,
+                    kind: KeyEventKind::Press,
+                    state: _,
+                }) => {
+                    self.selection = self.select_prev(self.selection);
+                }
+
+                Event::Key(KeyEvent {
+                    code: KeyCode::Down,
+                    modifiers: KeyModifiers::NONE,
+                    kind: KeyEventKind::Press,
+                    state: _,
+                }) => {
+                    self.selection = self.select_next(self.selection);
+                }
+
+                Event::Key(KeyEvent {
                     code: KeyCode::Char(' '),
                     modifiers: KeyModifiers::NONE,
                     kind: KeyEventKind::Press,
@@ -315,6 +331,88 @@ impl<'a> Recorder<'a> {
         }
 
         Ok(self.state)
+    }
+
+    fn first_selection_key(&self) -> SelectionKey {
+        match self.state.files.iter().enumerate().next() {
+            Some((file_idx, _)) => SelectionKey::File(FileKey { file_idx }),
+            None => SelectionKey::None,
+        }
+    }
+
+    fn all_selection_keys(&self) -> Vec<SelectionKey> {
+        let mut result = Vec::new();
+        for (file_idx, file) in self.state.files.iter().enumerate() {
+            result.push(SelectionKey::File(FileKey { file_idx }));
+            for (section_idx, section) in file.sections.iter().enumerate() {
+                result.push(SelectionKey::Section(SectionKey {
+                    file_idx,
+                    section_idx,
+                }));
+                match section {
+                    Section::Unchanged { .. } => {}
+                    Section::Changed { lines } => {
+                        for (line_idx, _line) in lines.iter().enumerate() {
+                            result.push(SelectionKey::Line(LineKey {
+                                file_idx,
+                                section_idx,
+                                line_idx,
+                            }));
+                        }
+                    }
+                    Section::FileMode {
+                        is_toggled: _,
+                        before: _,
+                        after: _,
+                    } => {
+                        result.push(SelectionKey::Line(LineKey {
+                            file_idx,
+                            section_idx,
+                            line_idx: 0,
+                        }));
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    fn select_prev(&self, selection_key: SelectionKey) -> SelectionKey {
+        // FIXME: could be O(1) instead of O(n)
+        let keys = self.all_selection_keys();
+        if keys.is_empty() {
+            return SelectionKey::None;
+        }
+        let index =
+            keys.iter()
+                .enumerate()
+                .find_map(|(k, v)| if v == &selection_key { Some(k) } else { None });
+        match index {
+            None => self.first_selection_key(),
+            Some(index) => match index.checked_sub(1) {
+                Some(index) => keys[index],
+                None => *keys.last().unwrap(),
+            },
+        }
+    }
+
+    fn select_next(&self, selection_key: SelectionKey) -> SelectionKey {
+        // FIXME: could be O(1) instead of O(n)
+        let keys = self.all_selection_keys();
+        if keys.is_empty() {
+            return SelectionKey::None;
+        }
+        let index =
+            keys.iter()
+                .enumerate()
+                .find_map(|(k, v)| if v == &selection_key { Some(k) } else { None });
+        match index {
+            None => self.first_selection_key(),
+            Some(index) => match keys.get(index + 1) {
+                Some(key) => *key,
+                None => keys[0],
+            },
+        }
     }
 
     fn toggle_current_item(&mut self) -> Result<(), RecordError> {
@@ -375,13 +473,6 @@ impl<'a> Recorder<'a> {
             }
         }
         Ok(())
-    }
-
-    fn first_selection_key(&self) -> SelectionKey {
-        match self.state.files.iter().enumerate().next() {
-            Some((file_idx, _)) => SelectionKey::File(FileKey { file_idx }),
-            None => SelectionKey::None,
-        }
     }
 
     fn file(&self, file_key: FileKey) -> Result<&File, RecordError> {
